@@ -1,0 +1,5 @@
+#!/bin/bash
+echo 'Installing to /usr/bin/sockmon ...'
+cp ./sockmon /usr/bin/sockmon
+chmod 755 /usr/bin/sockmon
+echo 'done!'

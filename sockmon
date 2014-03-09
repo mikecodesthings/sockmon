@@ -1,0 +1,292 @@
+#!/usr/bin/python
+import curses
+import threading
+import time
+import termios
+import fcntl
+import struct
+import sys
+import signal
+from copy import deepcopy
+from scapy.all import *
+
+ingress_list = []
+egress_list = []
+good_ports = []
+address = ''
+screen = None
+monitor_event = None
+threshold = 0
+
+class display_screen():
+	width  = 0
+	height = 0
+
+	window = { 'ingress' : None, 'egress' : None, }
+	
+	'''
+	Create windows, ingress taking up the top half of the screen and egress taking up the bottom half...
+	'''
+	def __init__(self, height, width):
+		self.width = width
+		self.height = height
+		self.address = address
+		
+		display_size_y = None
+		display_size_x = None
+
+		curses.initscr()
+		curses.start_color()
+
+		# initialize curses colors for alert strings
+		curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+
+		curses.noecho()
+		curses.cbreak()
+		curses.curs_set(0)
+
+		self.window['ingress'] = curses.newwin(height, width / 2, 0, 0)
+		self.window['egress'] = curses.newwin(height, width / 2, 0, width / 2)
+
+		for w in self.window:
+			self.window[w].box(0, 1)
+
+		self.set_title()
+
+	def set_title(self):
+		self.window['ingress'].addstr(0, 2, "Possible Malicious Ingress", curses.A_BOLD | curses.A_UNDERLINE)
+		self.window['egress'].addstr(0, 2, "Possible Malicious Egress", curses.A_BOLD | curses.A_UNDERLINE)
+
+		self.window['ingress'].refresh()
+		self.window['egress'].refresh()
+
+	def exit(self):
+		curses.endwin()
+
+	def stop():
+		self.exit()
+		self.kill()
+
+'''
+determine the size of the console window
+'''
+def get_term_size():
+	data = struct.pack("HH", 0, 0)
+	file_no = sys.stdout.fileno()
+	res = fcntl.ioctl(file_no, termios.TIOCGWINSZ, data)
+	return struct.unpack("HH", res)
+
+
+def display(height, width):
+	global screen
+	global ingress_list
+	global egress_list
+	global monitor_event
+	global good_ports
+	global threshold
+
+	proto = 0
+	src_ip = 1
+	dst_ip = 2
+	src_port = 3
+	dst_port = 4
+
+	screen = display_screen(height, width)
+
+	# get max display size of ingress and egress windows
+	(iy,ix) = screen.window['ingress'].getmaxyx()
+	iy = iy - 2
+	ix = ix - 2
+	ingress_list.append({'address' : '', 'ports':{}})
+
+	(ey,ex) = screen.window['egress'].getmaxyx()
+	ey = ey - 2
+	ex = ex - 2
+	egress_list.append({'address' : '', 'ports':{}})
+
+	# main display loop, print contents of traffic logged
+	while not monitor_event.is_set():
+		i_list = deepcopy(ingress_list)
+		e_list = deepcopy(egress_list)
+
+		while len(i_list) > iy: i_list.pop(0)
+		while len(e_list) > ey: e_list.pop(0)
+
+		line = 1
+		for source in i_list:
+			flag = 0
+
+			# format string to print
+			if source['address'] is not '':
+				m = "%s { " % (source['address'])
+				for p in source['ports']:
+					m = m + "%d:%d, " % (int(p), int(source['ports'][p]))
+					if source['ports'][p] >= threshold:
+						flag = 1
+				m = m + " }"
+			
+				# handle case when string is shorter than displayable line (to clear old character data)
+				while len(m) < ix:
+					m = m + " "
+
+				# handle case when string is longer than displayable line (truncate)
+				if len(m) > ix:
+					m = m[:ix - 6]
+					m = m + ' ... }'
+			
+				# if threshold is reached for a port, re-color
+				if flag == 1:
+					screen.window['ingress'].addstr(line, 1, "%s" % m, curses.A_BOLD | curses.color_pair(1))
+				else:
+					screen.window['ingress'].addstr(line, 1, "%s" % m)
+				
+				line += 1
+
+		line = 1
+		for destination in e_list:
+			flag = 0
+
+			# format string
+			if destination['address'] is not '':
+				m = "%s { " % (destination['address'])
+				for p in destination['ports']:
+					m = m + "%d:%d, " % (int(p), int(destination['ports'][p]))
+					if destination['ports'][p] >= threshold:
+						flag = 1
+				m = m[:-1] + " }"
+			
+				# handle short line
+				while len(m) < ex:
+					m = m + " "
+			
+				# handle long line
+				if len(m) > ex:
+					m = m[:ex - 6]
+					m = m + ' ... }'
+			
+				# re-color if threshold is reached
+				if flag == 1:
+					screen.window['egress'].addstr(line, 1, "%s" % m, curses.A_BOLD | curses.color_pair(1))
+				else:
+					screen.window['egress'].addstr(line, 1, "%s" %  m)
+
+				line += 1
+
+		screen.window['ingress'].refresh()
+		screen.window['egress'].refresh()
+
+	screen.exit()
+
+def process_packet(packet):
+	global monitor_event
+	global packet_list
+	global ingress_list
+	global egress_list
+	global good_ports
+
+	if monitor_event.is_set(): sys.exit(0)
+
+	src_addr = None
+	dst_addr = None
+	src_port = None
+	dst_port = None
+	proto = None
+
+	if IP in packet:
+		src_addr = packet[IP].src
+		dst_addr = packet[IP].dst
+	else: return
+	if TCP in packet:
+		proto = "TCP"
+		src_port = packet[TCP].sport
+		dst_port = packet[TCP].dport
+	if UDP in packet:
+		proto = "UDP"
+		src_port = packet[UDP].sport
+		dst_port = packet[UDP].dport
+
+	if src_addr is None or dst_addr is None: return
+	if src_port is None or dst_port is None: return
+	if proto is None: return
+
+	if address in src_addr or address in dst_addr: 
+		found = 0
+
+		# check if theres already an entry for this address
+		if address in src_addr and int(src_port) not in good_ports:
+			for entry in egress_list:
+				if dst_addr in entry['address']:
+					# check if theres already an entry for this port, and increment
+					for p in entry['ports']:
+						if p == int(src_port):
+							entry['ports'][p] += 1
+							found = 1
+					if found == 0:
+						entry['ports'][int(src_port)] = 1
+						found = 1
+					break
+			if found == 0:
+				# create new entry
+				egress_list.append({'address':dst_addr,'ports':{int(src_port):1}})
+
+		found = 0
+		if address in dst_addr and int(dst_port) not in good_ports:
+			for entry in ingress_list:
+				if src_addr in entry['address']:
+					for p in entry['ports']:
+						if p == int(dst_port):
+							entry['ports'][p] += 1
+							found = 1
+					if found == 0:
+						entry['ports'][int(dst_port)] = 1
+						found = 1
+					break
+			if found == 0:
+				ingress_list.append({'address':src_addr,'ports':{int(dst_port):1}})		
+
+def init_monitor():
+	sniff(filter="tcp or udp", count=0, prn=process_packet)
+
+def signal_handler(signum, frame):
+	global monitor_event
+	monitor_event.set()
+
+def main():
+	global good_ports
+	global address
+	global monitor_event
+	global threshold
+
+	if len(sys.argv) < 4:
+		print "usage: %s <IP> <good ports> <threshold>\n ex. %s 192.168.1.1 80,21,443,8000-8010 25" % (sys.argv[0], sys.argv[0])
+		print "  IP = IP address to monitor"
+		print "  good ports = ports that are acceptable to send/receive traffic on"
+		print "  threshold = re-color display once a port reaches the defined threshold"
+		sys.exit(0)
+
+	address = sys.argv[1]
+	threshold = int(sys.argv[3])
+	ports = sys.argv[2].split(',')
+	for p in ports:
+		if "-" in p:
+			r1,r2 = p.split("-")
+			r = range(int(r1),int(r2)+1)
+			for port in r:
+				good_ports.append(port)
+		else:
+			good_ports.append(int(p))
+
+	monitor_event = threading.Event()
+	signal.signal(signal.SIGINT, signal_handler)
+
+	(height, width) = get_term_size()
+	if height < 20 or width < 80:
+		print "Error: Terminal size too small, needs to be at least 80x20!"
+		print "Terminal size: %dx%d" % (width, height)
+		sys.exit(-1)
+	else:
+		monitor = threading.Thread(target=init_monitor).start()
+		display(height, width)
+
+if __name__ == "__main__":
+	main()
