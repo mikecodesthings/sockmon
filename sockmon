@@ -125,9 +125,10 @@ def display(height, width):
 			# format string to print
 			if source['address'] is not '':
 				m = "%s { " % (source['address'])
-				for p in source['ports'].keys():
-					m = m + "%d:%d, " % (int(p), int(source['ports'][p]))
-					if source['ports'][p] >= threshold:
+				ordered = sorted([(key,value) for (key,value) in source['ports'].items()])
+				for p in ordered:	
+					m = m + "%d:%d, " % (int(p[0]), int(p[1]))
+					if p[1] >= threshold:
 						flag = 1
 				m = m + " }"
 			
@@ -155,9 +156,10 @@ def display(height, width):
 			# format string
 			if destination['address'] is not '':
 				m = "%s { " % (destination['address'])
-				for p in destination['ports'].keys():
-					m = m + "%d:%d, " % (int(p), int(destination['ports'][p]))
-					if destination['ports'][p] >= threshold:
+				ordered = sorted([(key,value) for (key,value) in destination['ports'].items()])
+				for p in ordered:
+					m = m + "%d:%d, " % (int(p[0]), int(p[1]))
+					if p[1] >= threshold:
 						flag = 1
 				m = m[:-1] + " }"
 			
