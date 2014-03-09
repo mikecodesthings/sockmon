@@ -19,6 +19,7 @@ address = ''
 screen = None
 monitor_event = None
 threshold = 0
+lock = threading.Lock()
 
 class display_screen():
 	width  = 0
@@ -86,6 +87,7 @@ def display(height, width):
 	global monitor_event
 	global good_ports
 	global threshold
+	global lock
 
 	proto = 0
 	src_ip = 1
@@ -108,8 +110,10 @@ def display(height, width):
 
 	# main display loop, print contents of traffic logged
 	while not monitor_event.is_set():
+		lock.acquire()
 		i_list = deepcopy(ingress_list)
 		e_list = deepcopy(egress_list)
+		lock.release()
 
 		while len(i_list) > iy: i_list.pop(0)
 		while len(e_list) > ey: e_list.pop(0)
@@ -121,7 +125,7 @@ def display(height, width):
 			# format string to print
 			if source['address'] is not '':
 				m = "%s { " % (source['address'])
-				for p in source['ports']:
+				for p in source['ports'].keys():
 					m = m + "%d:%d, " % (int(p), int(source['ports'][p]))
 					if source['ports'][p] >= threshold:
 						flag = 1
@@ -151,7 +155,7 @@ def display(height, width):
 			# format string
 			if destination['address'] is not '':
 				m = "%s { " % (destination['address'])
-				for p in destination['ports']:
+				for p in destination['ports'].keys():
 					m = m + "%d:%d, " % (int(p), int(destination['ports'][p]))
 					if destination['ports'][p] >= threshold:
 						flag = 1
@@ -216,6 +220,7 @@ def process_packet(packet):
 
 		# check if theres already an entry for this address
 		if address in src_addr and int(src_port) not in good_ports:
+			lock.acquire()
 			for entry in egress_list:
 				if dst_addr in entry['address']:
 					# check if theres already an entry for this port, and increment
@@ -230,9 +235,11 @@ def process_packet(packet):
 			if found == 0:
 				# create new entry
 				egress_list.append({'address':dst_addr,'ports':{int(src_port):1}})
+			lock.release()
 
 		found = 0
 		if address in dst_addr and int(dst_port) not in good_ports:
+			lock.acquire()
 			for entry in ingress_list:
 				if src_addr in entry['address']:
 					for p in entry['ports']:
@@ -245,7 +252,8 @@ def process_packet(packet):
 					break
 			if found == 0:
 				ingress_list.append({'address':src_addr,'ports':{int(dst_port):1}})		
-
+			lock.release()
+			
 def init_monitor():
 	sniff(filter="tcp or udp", count=0, prn=process_packet)
 
